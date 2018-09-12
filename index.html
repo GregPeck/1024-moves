@@ -1,0 +1,238 @@
+<html>
+<head>
+<title>CUBE</title>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+<script src="lost.js"></script>
+<style type="text/css">
+	body {
+		margin:0;
+	}
+	#HUD {
+		position:absolute;
+		top:0;
+		left:0;
+	}
+</style>
+<script id="shader-fs" type="x-shader/x-fragment">
+precision mediump float;
+varying vec2 vTextureCoord;
+varying float vLightWeighting;
+varying vec3 worldPosition;
+uniform sampler2D uSampler;
+uniform vec4 lights[48];
+uniform int nbLights;
+uniform vec3 ambientColor;
+uniform float shadowMap[136];
+uniform int cubeFace;
+uniform int isPlayer;
+uniform int isCurrentPlayer;
+uniform float iTime;
+varying vec3 vPosition;
+void main(void) {
+	vec4 textureColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+	vec3 totalLight = vec3(0.0,0.0,0.0);
+	totalLight += ambientColor;
+	for (int i=0; i<48; i++) {
+		if (i==nbLights) {break;}
+
+		vec3 light;
+		float d = distance(worldPosition, lights[i].xyz);
+		if (lights[i].a<=1.0) {
+			light = vec3(sin(iTime/100.0)/2.0 + 0.5, sin(iTime/150.0)/2.0 + 0.5, cos(iTime/100.0)/2.0 + 0.5);
+			light *= max(0.0, 4.4 - (0.8 * d));
+			totalLight += light * 0.15;
+		}
+	}
+
+	float profondeur = worldPosition.z / 15.;
+	profondeur += worldPosition.x / 50.;
+
+	if (cubeFace==6) {
+		profondeur *= 0.6;
+	} else if (cubeFace==5) {
+		profondeur *= 0.4; 
+	}
+	if (isPlayer==1) {
+		float distanceS = abs(vTextureCoord.s-0.5) * 2.;
+		float distanceT = abs(vTextureCoord.t-0.5) * 2.;
+		float distance = max(distanceS, distanceT);
+		float alpha = 0.;
+		if (distance<0.8) {
+			textureColor.rgb = vec3(0.2,0.2,0.2);
+		} else {
+			alpha = 1.-((1. - distance)*3.);
+			textureColor.rgb = vec3(0.2,0.2,0.2);
+		}
+		if (isCurrentPlayer==0) {
+			textureColor.rgb += vec3(0.2,0.2,0.2)*alpha;
+		} else {
+			textureColor.rgb += vec3(1,0.8,0.6)*alpha;
+		}
+		gl_FragColor = vec4(textureColor.rgb, 1.);
+	} else {
+		if (isCurrentPlayer==1) {
+			vec3 c = textureColor.rgb * vLightWeighting * profondeur;
+			vec3 cible = vec3(0.1058, 0.647, 0.827);
+			c*=cible + vec3(0.7,0.7,0.7);
+			gl_FragColor = vec4(c, textureColor.a) + vec4(totalLight, textureColor.a);
+		} else {
+			gl_FragColor = vec4(textureColor.rgb * vLightWeighting * profondeur, textureColor.a) + vec4(totalLight, textureColor.a);
+		}
+	}
+}
+</script>
+<script id="lava-fs" type="x-shader/x-fragment">
+precision mediump float;
+varying vec2 vTextureCoord;
+varying float vLightWeighting;
+uniform vec2 resolution;
+varying vec3 worldPosition;
+uniform sampler2D uSampler;
+uniform vec4 lights[48];
+uniform int nbLights;
+uniform vec3 ambientColor;
+uniform float shadowMap[136];
+uniform int cubeFace;
+uniform float iTime;
+varying vec3 vPosition;
+#define VOLUMETRIC_STEPS 19
+#define MAX_ITER 35
+#define SPEED 100.0;
+mat2 mm2(in float a){float c = cos(a), s = sin(a);return mat2(c,-s,s,c);}
+float noise( in float x ) {
+	return texture2D(uSampler, vec2(x*.01,1.),0.).x;
+}
+float hash( float n ){return fract(sin(n)*43758.5453);}
+float noise(in vec3 p) {
+	vec3 ip = floor(p);
+	vec3 f = fract(p);
+	f = f*f*(3.0-2.0*f);
+	vec2 uv = (ip.xy+vec2(37.0,17.0)*ip.z) + f.xy;
+	vec2 rg = texture2D(uSampler, (uv+ 0.5)/256.0, 0. ).yx;
+	return mix(rg.x, rg.y, f.z);
+}
+mat3 m3 = mat3(0.,0.8,0.6,-0.8,0.36,-0.48,-0.6,-0.48,0.64);
+float flow(in vec3 p, in float t) {
+	float time = iTime/SPEED;
+	float z=2.;
+	float rz = 0.;
+	vec3 bp = p;
+	for (float i= 1.;i < 5.;i++ ) {
+		p += time*.1;
+		rz+= (sin(noise(p+t*0.8)*6.)*0.5+0.5) /z;
+		p = mix(bp,p,0.6);
+		z *= 2.;
+		p *= 2.01 * m3;
+	}
+	return rz;	
+}
+float sins(in float x) {
+	float time = iTime/SPEED;
+	float rz = 0.;
+	float z = 2.;
+	for (float i= 0.;i < 3.;i++ ) {
+		rz += abs(fract(x*1.4)-0.5)/z;
+		x *= 1.3;
+		z *= 1.15;
+		x -= time*.65*z;
+	}
+	return rz;
+}
+
+float segm( vec3 p, vec3 a, vec3 b) {
+	vec3 pa = p - a;
+	vec3 ba = b - a;
+	float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1. );	
+	return length(pa - ba*h)*.5;
+}
+
+vec3 path(in float i, in float d) {
+	vec3 en = vec3(0.,0.,1.);
+	float sns2 = sins(d+i*0.5)*0.22;
+	float sns = sins(d+i*.6)*0.21;
+	en.xz *= mm2((hash(i*10.569)-.5)*6.2+sns2);
+	en.xy *= mm2((hash(i*4.732)-.5)*6.2+sns);
+	return en;
+}
+vec2 map(vec3 p, float i) {
+	float lp = length(p);
+	vec3 bg = vec3(0.);   
+	vec3 en = path(i,lp);
+	float ins = smoothstep(0.11,.46,lp);
+	float outs = .15+smoothstep(.0,.15,abs(lp-1.));
+	p *= ins*outs;
+	float id = ins*outs;
+	float rz = segm(p, bg, en)-0.011;
+	return vec2(rz,id);
+}
+vec2 iSphere2(in vec3 ro, in vec3 rd) {
+	vec3 oc = ro;
+	float b = dot(oc, rd);
+	float c = dot(oc,oc) - 1.;
+	float h = b*b - c;
+	if(h <0.) return vec2(-1.);
+	return vec2((-b - sqrt(h)+0.), (-b + sqrt(h)));
+}
+void main(void) {
+	vec4 textureColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+	gl_FragColor = vec4(textureColor.rgb, textureColor.a);
+	float time = iTime/SPEED;
+	vec2 iResolution = resolution/1.;
+	float iTime = time/80.;
+	vec2 p = vPosition.xy;
+	vec2 iMouse = vec2(10.,10.);
+	vec2 um = iMouse - 0.5;
+	vec3 ro = vec3(0.,0.,5.);
+	vec3 rd = normalize(vec3(p*.7,-1.5));
+	mat2 mx = mm2(time*.4+um.x*6.);
+	mat2 my = mm2(time*0.3+um.y*6.); 
+	ro.xz *= mx;rd.xz *= mx;
+	ro.xy *= my;rd.xy *= my;
+	vec3 bro = ro;
+	vec3 brd = rd;
+	vec3 col = vec3(0.0125,0.,0.025);
+	ro = bro;
+	rd = brd;
+	vec2 sph = iSphere2(ro,rd);
+	float alpha = 1.;
+	if (sph.x > 0.) {
+		vec3 pos = ro+rd*sph.x;
+		vec3 pos2 = ro+rd*sph.y;
+		vec3 rf = reflect( rd, pos );
+		vec3 rf2 = reflect( rd, pos2 );
+		float nz = (-log(abs(flow(rf*1.2,time)-.01)));
+		float nz2 = (-log(abs(flow(rf2*1.2,-time)-.01)));
+		col += (0.1*nz*nz* vec3(0.12,0.12,.5) + 0.05*nz2*nz2*vec3(0.55,0.2,.55))*0.8;
+	} else {
+		alpha = 0.;
+		col = vec3(1,0,0);
+	}
+	gl_FragColor = vec4(col*8., alpha);
+}
+</script>
+<script id="shader-vs" type="x-shader/x-vertex">
+attribute vec3 aVertexPosition;
+attribute vec2 aTextureCoord;
+uniform mat4 uMVMatrix;
+uniform mat4 uPMatrix;
+uniform vec3 cameraPosition;	
+varying vec2 vTextureCoord;
+varying float vLightWeighting;
+varying vec3 vPosition;
+varying vec3 worldPosition;
+varying vec2 frag_uv;	
+void main(void) {
+	gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.);
+	vPosition = normalize(aVertexPosition);
+	vTextureCoord = aTextureCoord;
+	vLightWeighting = 1. - gl_Position.z / 10.;
+	vLightWeighting = 1.;
+	worldPosition = cameraPosition.xyz + aVertexPosition;
+}
+</script>
+</head>
+<body onload="webGLStart();" onresize="resize()">
+<canvas id="game"></canvas>
+<canvas id="HUD"></canvas>
+</body>
+</html>
